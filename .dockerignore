@@ -1,0 +1,12 @@
+.env
+.env.*
+.git
+.github
+node_modules
+dist
+logs
+*.log
+*.db
+ctf.db
+coverage
+.worktrees
