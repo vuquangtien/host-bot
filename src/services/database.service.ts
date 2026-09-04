@@ -10,7 +10,11 @@ import {
   SolvedChallenge,
   CTFChallenge,
   CTFChallengeCategory,
+  ChallengeParserRule,
+  ChallengeParserRuleFields,
   ChallengeCategory,
+  ChallengeSyncProvider,
+  ChallengeSyncSource,
   ChallengeStatus,
   ManagedDiscordChannelKind,
 } from '../types';
@@ -73,6 +77,37 @@ interface ChallengeRow {
   solved_at: number | null;
   writeup_owner: string | null;
   writeup_url: string | null;
+  external_source: string | null;
+  external_id: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface ChallengeSyncSourceRow {
+  ctf_id: number;
+  url: string;
+  provider: ChallengeSyncProvider;
+  enabled: number;
+  last_sync_at: number | null;
+  last_error: string | null;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+
+const CHALLENGE_SYNC_PROVIDER_CHECK = "('auto','ctfd','l3ak','generic')";
+
+interface ChallengeParserRuleRow {
+  id: number;
+  domain: string;
+  source_url: string;
+  endpoint: string;
+  method: 'GET';
+  array_path: string;
+  field_mapping: string;
+  created_by: string;
+  failure_count: number;
+  last_error: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -140,6 +175,18 @@ function parseStringArray(value: string | null | undefined): string[] {
   }
 }
 
+function normalizedRuleSourceUrl(value: string): { domain: string; sourceUrl: string } {
+  const url = new URL(
+    /^https?:\/\//i.test(value.trim()) ? value.trim() : `https://${value.trim()}`
+  );
+  url.hash = '';
+  url.searchParams.sort();
+  return {
+    domain: url.hostname.toLocaleLowerCase(),
+    sourceUrl: url.toString(),
+  };
+}
+
 /**
  * Database service for managing CTF data using SQLite3
  */
@@ -156,6 +203,34 @@ class DatabaseService {
     const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as TableInfoRow[];
     if (columns.some((existing) => existing.name === column)) return;
     this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+
+  private ensureChallengeSyncProviderConstraint(): void {
+    const table = this.db
+      .prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+      .get('ctf_challenge_sync_sources') as { sql: string } | undefined;
+    if (!table || table.sql.includes("'generic'")) return;
+
+    this.db.exec(`
+      ALTER TABLE ctf_challenge_sync_sources RENAME TO ctf_challenge_sync_sources_old;
+      CREATE TABLE ctf_challenge_sync_sources (
+        ctf_id INTEGER PRIMARY KEY,
+        url TEXT NOT NULL,
+        provider TEXT NOT NULL CHECK (provider IN ${CHALLENGE_SYNC_PROVIDER_CHECK}),
+        enabled INTEGER NOT NULL DEFAULT 1,
+        last_sync_at INTEGER,
+        last_error TEXT,
+        created_by TEXT NOT NULL,
+        created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+        FOREIGN KEY(ctf_id) REFERENCES ctfs(id) ON DELETE CASCADE
+      );
+      INSERT INTO ctf_challenge_sync_sources
+        (ctf_id, url, provider, enabled, last_sync_at, last_error, created_by, created_at, updated_at)
+      SELECT ctf_id, url, provider, enabled, last_sync_at, last_error, created_by, created_at, updated_at
+      FROM ctf_challenge_sync_sources_old;
+      DROP TABLE ctf_challenge_sync_sources_old;
+    `);
   }
 
   /**
@@ -265,6 +340,8 @@ class DatabaseService {
           solved_at INTEGER,
           writeup_owner TEXT,
           writeup_url TEXT,
+          external_source TEXT,
+          external_id TEXT,
           created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
           updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
           FOREIGN KEY(ctf_id) REFERENCES ctfs(id) ON DELETE CASCADE
@@ -282,6 +359,37 @@ class DatabaseService {
         );
         CREATE INDEX IF NOT EXISTS idx_ctf_challenge_categories_ctf_id
           ON ctf_challenge_categories(ctf_id);
+
+        CREATE TABLE IF NOT EXISTS ctf_challenge_sync_sources (
+          ctf_id INTEGER PRIMARY KEY,
+          url TEXT NOT NULL,
+          provider TEXT NOT NULL CHECK (provider IN ${CHALLENGE_SYNC_PROVIDER_CHECK}),
+          enabled INTEGER NOT NULL DEFAULT 1,
+          last_sync_at INTEGER,
+          last_error TEXT,
+          created_by TEXT NOT NULL,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          FOREIGN KEY(ctf_id) REFERENCES ctfs(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS ctf_challenge_parser_rules (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          domain TEXT NOT NULL,
+          source_url TEXT NOT NULL,
+          endpoint TEXT NOT NULL,
+          method TEXT NOT NULL DEFAULT 'GET' CHECK (method IN ('GET')),
+          array_path TEXT NOT NULL DEFAULT '',
+          field_mapping TEXT NOT NULL,
+          created_by TEXT NOT NULL,
+          failure_count INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT,
+          created_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          updated_at INTEGER NOT NULL DEFAULT (strftime('%s','now')),
+          UNIQUE(domain, source_url)
+        );
+        CREATE INDEX IF NOT EXISTS idx_ctf_challenge_parser_rules_domain
+          ON ctf_challenge_parser_rules(domain);
 
         CREATE TABLE IF NOT EXISTS ctf_dashboards (
           ctf_id INTEGER PRIMARY KEY,
@@ -316,6 +424,14 @@ class DatabaseService {
       this.addColumnIfMissing('ctf_challenges', 'claimed_at', 'INTEGER');
       this.addColumnIfMissing('ctf_challenges', 'claimant_ids', "TEXT NOT NULL DEFAULT '[]'");
       this.addColumnIfMissing('ctf_challenges', 'categories', "TEXT NOT NULL DEFAULT '[]'");
+      this.addColumnIfMissing('ctf_challenges', 'external_source', 'TEXT');
+      this.addColumnIfMissing('ctf_challenges', 'external_id', 'TEXT');
+      this.ensureChallengeSyncProviderConstraint();
+      this.db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ctf_challenges_external
+          ON ctf_challenges(ctf_id, external_source, external_id)
+          WHERE external_source IS NOT NULL AND external_id IS NOT NULL
+      `);
       this.db.exec(`
         UPDATE ctfs
         SET competition_endtime = CASE
@@ -831,13 +947,15 @@ class DatabaseService {
     category: ChallengeCategory;
     categories?: ChallengeCategory[];
     points: number;
+    externalSource?: string;
+    externalId?: string;
   }): Promise<CTFChallenge> {
     const categories = normalizeChallengeCategories(input.category, input.categories);
     const result = this.db
       .prepare(
         `INSERT INTO ctf_challenges
-          (ctf_id,thread_id,channel_id,name,category,categories,points)
-         VALUES (?,?,?,?,?,?,?)`
+          (ctf_id,thread_id,channel_id,name,category,categories,points,external_source,external_id)
+         VALUES (?,?,?,?,?,?,?,?,?)`
       )
       .run(
         input.ctfId,
@@ -846,7 +964,9 @@ class DatabaseService {
         input.name,
         input.category,
         JSON.stringify(categories),
-        input.points
+        input.points,
+        input.externalSource ?? null,
+        input.externalId ?? null
       );
     const challenge = await this.getChallengeById(Number(result.lastInsertRowid));
     if (!challenge) throw new Error('Inserted challenge not found');
@@ -950,6 +1070,160 @@ class DatabaseService {
     return row ? this.rowToChallengeCategory(row) : null;
   }
 
+  async upsertChallengeSyncSource(input: {
+    ctfId: number;
+    url: string;
+    provider: ChallengeSyncProvider;
+    enabled?: boolean;
+    createdBy: string;
+  }): Promise<ChallengeSyncSource> {
+    const normalizedUrl = input.url.trim();
+    if (!normalizedUrl) throw new Error('Challenge sync URL cannot be empty');
+
+    this.db
+      .prepare(
+        `INSERT INTO ctf_challenge_sync_sources
+          (ctf_id, url, provider, enabled, created_by)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(ctf_id) DO UPDATE SET
+           url = excluded.url,
+           provider = excluded.provider,
+           enabled = excluded.enabled,
+           last_error = NULL,
+           updated_at = strftime('%s','now')`
+      )
+      .run(
+        input.ctfId,
+        normalizedUrl,
+        input.provider,
+        input.enabled === false ? 0 : 1,
+        input.createdBy
+      );
+
+    const source = await this.getChallengeSyncSource(input.ctfId);
+    if (!source) throw new Error('Challenge sync source was not saved');
+    return source;
+  }
+
+  async getChallengeSyncSource(ctfId: number): Promise<ChallengeSyncSource | null> {
+    const row = this.db
+      .prepare('SELECT * FROM ctf_challenge_sync_sources WHERE ctf_id = ?')
+      .get(ctfId) as ChallengeSyncSourceRow | undefined;
+    return row ? this.rowToChallengeSyncSource(row) : null;
+  }
+
+  async getEnabledChallengeSyncSources(): Promise<ChallengeSyncSource[]> {
+    const rows = this.db
+      .prepare(
+        `SELECT source.*
+         FROM ctf_challenge_sync_sources source
+         JOIN ctfs ON ctfs.id = source.ctf_id
+         WHERE source.enabled = 1
+           AND ctfs.archived = 0
+           AND ctfs.channels_purged = 0
+         ORDER BY source.updated_at ASC, source.ctf_id ASC`
+      )
+      .all() as ChallengeSyncSourceRow[];
+    return rows.map((row) => this.rowToChallengeSyncSource(row));
+  }
+
+  async markChallengeSyncResult(
+    ctfId: number,
+    result: { ok: true; syncedAt: number } | { ok: false; error: string }
+  ): Promise<void> {
+    if (result.ok) {
+      this.db
+        .prepare(
+          `UPDATE ctf_challenge_sync_sources
+           SET last_sync_at = ?, last_error = NULL, updated_at = strftime('%s','now')
+           WHERE ctf_id = ?`
+        )
+        .run(result.syncedAt, ctfId);
+      return;
+    }
+
+    this.db
+      .prepare(
+        `UPDATE ctf_challenge_sync_sources
+         SET last_error = ?, updated_at = strftime('%s','now')
+         WHERE ctf_id = ?`
+      )
+      .run(result.error.slice(0, 500), ctfId);
+  }
+
+  async getChallengeParserRule(sourceUrl: string): Promise<ChallengeParserRule | null> {
+    const normalized = normalizedRuleSourceUrl(sourceUrl);
+    const row = this.db
+      .prepare(
+        `SELECT * FROM ctf_challenge_parser_rules
+         WHERE domain = ? AND source_url = ?`
+      )
+      .get(normalized.domain, normalized.sourceUrl) as ChallengeParserRuleRow | undefined;
+    return row ? this.rowToChallengeParserRule(row) : null;
+  }
+
+  async upsertChallengeParserRule(input: {
+    sourceUrl: string;
+    endpoint: string;
+    arrayPath: string;
+    fields: ChallengeParserRuleFields;
+    createdBy: string;
+  }): Promise<ChallengeParserRule> {
+    const normalized = normalizedRuleSourceUrl(input.sourceUrl);
+    this.db
+      .prepare(
+        `INSERT INTO ctf_challenge_parser_rules
+           (domain, source_url, endpoint, method, array_path, field_mapping, created_by)
+         VALUES (?, ?, ?, 'GET', ?, ?, ?)
+         ON CONFLICT(domain, source_url) DO UPDATE SET
+           endpoint = excluded.endpoint,
+           method = excluded.method,
+           array_path = excluded.array_path,
+           field_mapping = excluded.field_mapping,
+           failure_count = 0,
+           last_error = NULL,
+           updated_at = strftime('%s','now')`
+      )
+      .run(
+        normalized.domain,
+        normalized.sourceUrl,
+        input.endpoint,
+        input.arrayPath,
+        JSON.stringify(input.fields),
+        input.createdBy
+      );
+
+    const rule = await this.getChallengeParserRule(input.sourceUrl);
+    if (!rule) throw new Error('Challenge parser rule was not saved');
+    return rule;
+  }
+
+  async markChallengeParserRuleResult(
+    ruleId: number,
+    result: { ok: true } | { ok: false; error: string }
+  ): Promise<void> {
+    if (result.ok) {
+      this.db
+        .prepare(
+          `UPDATE ctf_challenge_parser_rules
+           SET failure_count = 0, last_error = NULL, updated_at = strftime('%s','now')
+           WHERE id = ?`
+        )
+        .run(ruleId);
+      return;
+    }
+
+    this.db
+      .prepare(
+        `UPDATE ctf_challenge_parser_rules
+         SET failure_count = failure_count + 1,
+             last_error = ?,
+             updated_at = strftime('%s','now')
+         WHERE id = ?`
+      )
+      .run(result.error.slice(0, 500), ruleId);
+  }
+
   async getChallengeById(id: number): Promise<CTFChallenge | null> {
     const row = this.db.prepare('SELECT * FROM ctf_challenges WHERE id = ?').get(id) as
       ChallengeRow | undefined;
@@ -960,6 +1234,20 @@ class DatabaseService {
     const row = this.db
       .prepare('SELECT * FROM ctf_challenges WHERE thread_id = ?')
       .get(threadId) as ChallengeRow | undefined;
+    return row ? this.rowToChallenge(row) : null;
+  }
+
+  async getChallengeByExternalId(
+    ctfId: number,
+    externalSource: string,
+    externalId: string
+  ): Promise<CTFChallenge | null> {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM ctf_challenges
+         WHERE ctf_id = ? AND external_source = ? AND external_id = ?`
+      )
+      .get(ctfId, externalSource, externalId) as ChallengeRow | undefined;
     return row ? this.rowToChallenge(row) : null;
   }
 
@@ -985,6 +1273,8 @@ class DatabaseService {
         | 'solvedAt'
         | 'writeupOwner'
         | 'writeupUrl'
+        | 'externalSource'
+        | 'externalId'
       >
     >
   ): Promise<CTFChallenge> {
@@ -1007,6 +1297,8 @@ class DatabaseService {
     if ('solvedAt' in updates) add('solved_at', updates.solvedAt ?? null);
     if ('writeupOwner' in updates) add('writeup_owner', updates.writeupOwner ?? null);
     if ('writeupUrl' in updates) add('writeup_url', updates.writeupUrl ?? null);
+    if ('externalSource' in updates) add('external_source', updates.externalSource ?? null);
+    if ('externalId' in updates) add('external_id', updates.externalId ?? null);
 
     sets.push("updated_at = strftime('%s','now')");
     values.push(id);
@@ -1424,6 +1716,63 @@ class DatabaseService {
       solvedAt: row.solved_at ?? undefined,
       writeupOwner: row.writeup_owner ?? undefined,
       writeupUrl: row.writeup_url ?? undefined,
+      externalSource: row.external_source ?? undefined,
+      externalId: row.external_id ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private rowToChallengeSyncSource(row: ChallengeSyncSourceRow): ChallengeSyncSource {
+    return {
+      ctfId: row.ctf_id,
+      url: row.url,
+      provider: row.provider,
+      enabled: row.enabled === 1,
+      lastSyncAt: row.last_sync_at ?? undefined,
+      lastError: row.last_error ?? undefined,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private rowToChallengeParserRule(row: ChallengeParserRuleRow): ChallengeParserRule {
+    let fields: ChallengeParserRuleFields = { name: 'name' };
+    try {
+      const parsed: unknown = JSON.parse(row.field_mapping);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const record = parsed as Record<string, unknown>;
+        const name = typeof record.name === 'string' && record.name.trim() ? record.name : 'name';
+        fields = {
+          id: typeof record.id === 'string' ? record.id : undefined,
+          name,
+          category: typeof record.category === 'string' ? record.category : undefined,
+          points: typeof record.points === 'string' ? record.points : undefined,
+          description: typeof record.description === 'string' ? record.description : undefined,
+          connectionInfo:
+            typeof record.connectionInfo === 'string' ? record.connectionInfo : undefined,
+          files: typeof record.files === 'string' ? record.files : undefined,
+          fileName: typeof record.fileName === 'string' ? record.fileName : undefined,
+          fileUrl: typeof record.fileUrl === 'string' ? record.fileUrl : undefined,
+          url: typeof record.url === 'string' ? record.url : undefined,
+        };
+      }
+    } catch {
+      fields = { name: 'name' };
+    }
+
+    return {
+      id: row.id,
+      domain: row.domain,
+      sourceUrl: row.source_url,
+      endpoint: row.endpoint,
+      method: row.method,
+      arrayPath: row.array_path,
+      fields,
+      createdBy: row.created_by,
+      failureCount: row.failure_count,
+      lastError: row.last_error ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

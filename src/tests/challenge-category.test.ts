@@ -8,6 +8,8 @@ import {
 
 assert.equal(normalizeChallengeCategoryName(' AI / ML '), 'ai-ml');
 assert.equal(normalizeChallengeCategoryName('Phần Cứng'), 'phan-cung');
+assert.equal(normalizeChallengeCategoryName('Reverse'), 'rev');
+assert.equal(normalizeChallengeCategoryName('Forensic'), 'forensics');
 assert.equal(normalizeChallengeCategoryName('---'), null);
 assert.equal(isDefaultChallengeCategory('web'), true);
 assert.equal(isDefaultChallengeCategory('hardware'), false);

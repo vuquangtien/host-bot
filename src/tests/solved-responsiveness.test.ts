@@ -8,13 +8,19 @@ const solveSource = fs.readFileSync(
 );
 const persistedAt = solveSource.indexOf('databaseService.solveChallenge');
 const acknowledgedAt = solveSource.indexOf('Đã solve **${challenge.name}**.');
-const backgroundAt = solveSource.indexOf('void finishSolveFollowUps');
+const backgroundAt = solveSource.indexOf('void finishSolveFollowUps', acknowledgedAt);
+const repairAcknowledgedAt = solveSource.indexOf('Challenge đã solved rồi');
+const repairBackgroundAt = solveSource.indexOf('void finishSolveFollowUps', repairAcknowledgedAt);
 
 assert.ok(persistedAt >= 0, '/solved must persist the solve');
 assert.ok(acknowledgedAt > persistedAt, '/solved must acknowledge only after persistence succeeds');
 assert.ok(
   backgroundAt > acknowledgedAt,
   '/solved must acknowledge before starting non-critical Discord follow-ups'
+);
+assert.ok(
+  repairBackgroundAt > repairAcknowledgedAt,
+  '/solved repair mode must acknowledge before retrying Discord follow-ups'
 );
 assert.match(solveSource, /runBestEffortTasks\(tasks, SOLVE_FOLLOW_UP_TIMEOUT_MS\)/);
 

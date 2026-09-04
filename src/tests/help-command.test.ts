@@ -28,8 +28,12 @@ async function run(): Promise<void> {
   const data = embed.toJSON();
   assert.match(data.title ?? '', /Hướng dẫn nhanh/);
   const helpText = data.fields?.map((field) => field.value).join('\n') ?? '';
-  assert.match(helpText, /\/writeup release/);
-  assert.match(helpText, /\/writeup submit url:/);
+  assert.match(helpText, /\/ctf create/);
+  assert.match(helpText, /\/solved/);
+  assert.match(helpText, /writeup HTTP\(S\)/);
+  assert.doesNotMatch(helpText, /\/ctf sync/);
+  assert.doesNotMatch(helpText, /\/ctf challenge/);
+  assert.doesNotMatch(helpText, /\/writeup/);
 
   console.log('help command tests passed');
 }

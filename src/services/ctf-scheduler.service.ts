@@ -1,12 +1,13 @@
-import { Client } from 'discord.js';
+import { ChannelType, Client } from 'discord.js';
 import { config } from '../config/env';
 import { buildCTFMilestones } from '../utils/ctf-schedule';
 import databaseService from './database.service';
 import challengeService from './challenge.service';
+import challengeSyncService from './challenge-sync.service';
 import discordService from './discord.service';
 import logger from '../utils/logger';
 
-const TICK_INTERVAL_MS = 5 * 60 * 1000;
+const TICK_INTERVAL_MS = 60 * 1000;
 
 class CTFSchedulerService {
   private running = false;
@@ -36,6 +37,11 @@ class CTFSchedulerService {
       for (const ctf of ctfs) {
         if (ctf.data.archived || ctf.data.channelsPurged) continue;
 
+        const category =
+          guild.channels.cache.get(ctf.data.cate) ??
+          (await guild.channels.fetch(ctf.data.cate).catch(() => null));
+        if (category?.type !== ChannelType.GuildCategory) continue;
+
         const start = ctf.data.starttime ?? 0;
         const end = ctf.data.competitionEndtime || ctf.data.endtime;
         const milestones = buildCTFMilestones(start, end, ctf.data.name);
@@ -62,6 +68,33 @@ class CTFSchedulerService {
           await challengeService
             .refreshDashboard(guild, ctf.key, ctf.data)
             .catch((error) => logger.warn(`Dashboard refresh failed for ${ctf.data.name}:`, error));
+        }
+
+        if (now >= start && now <= end) {
+          const source = await databaseService.getChallengeSyncSource(Number(ctf.key));
+          if (source?.enabled) {
+            try {
+              const summary = await challengeSyncService.syncCTF(guild, ctf.key, ctf.data, source);
+              await databaseService.markChallengeSyncResult(Number(ctf.key), {
+                ok: true,
+                syncedAt: now,
+              });
+              if (summary.created > 0 || summary.adopted > 0) {
+                logger.info(
+                  `Synced ${ctf.data.name}: fetched=${summary.fetched}, ` +
+                    `created=${summary.created}, adopted=${summary.adopted}, ` +
+                    `provider=${summary.provider}`
+                );
+              }
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              await databaseService.markChallengeSyncResult(Number(ctf.key), {
+                ok: false,
+                error: message,
+              });
+              logger.warn(`Challenge sync failed for ${ctf.data.name}:`, error);
+            }
+          }
         }
       }
 

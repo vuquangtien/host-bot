@@ -11,6 +11,8 @@ const testFiles =
         'src/tests/challenge-category.test.ts',
         'src/tests/challenge-category-migration.test.ts',
         'src/tests/challenge-list-view.test.ts',
+        'src/tests/challenge-sync-generic.test.ts',
+        'src/tests/ctf-command-schema.test.ts',
         'src/tests/challenge-command-schema.test.ts',
         'src/tests/help-command.test.ts',
         'src/tests/best-effort.test.ts',

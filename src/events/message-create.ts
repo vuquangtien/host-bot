@@ -8,6 +8,18 @@ import {
   normalizeChallengeCategoryName,
 } from '../utils/challenge-category';
 
+function firstHttpUrl(content: string): string | null {
+  const match = content.match(/https?:\/\/[^\s<>()]+/i);
+  if (!match) return null;
+
+  try {
+    const url = new URL(match[0].replace(/[.,;:!?]+$/g, ''));
+    return url.protocol === 'http:' || url.protocol === 'https:' ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
 function cleanThreadName(name: string): string {
   return name
     .replace(/^\[[^\]]+\]\s*/, '')
@@ -54,7 +66,37 @@ export async function handleChallengeMessage(message: Message): Promise<void> {
         challenge = await databaseService.getChallengeByThread(thread.id);
       }
     }
-    if (!challenge || challenge.status === 'solved') return;
+    if (!challenge) return;
+
+    if (challenge.status === 'solved') {
+      if (challenge.writeupUrl) return;
+
+      const url = firstHttpUrl(message.content);
+      if (!url) return;
+
+      const updated = await databaseService.updateChallenge(challenge.id, {
+        writeupOwner: message.author.id,
+        writeupUrl: url,
+      });
+      try {
+        await challengeService.announceWriteup(
+          message.guild,
+          ctf.data,
+          updated,
+          message.author.id,
+          url
+        );
+        await thread.setLocked(true, 'Writeup link detected').catch((error) => {
+          logger.warn(`Could not lock ${challenge.threadId}:`, error);
+        });
+        await thread.setArchived(true, 'Writeup link detected').catch((error) => {
+          logger.warn(`Could not archive ${challenge.threadId}:`, error);
+        });
+      } catch (error) {
+        logger.warn(`Writeup link saved but announcement failed for ${challenge.name}:`, error);
+      }
+      return;
+    }
 
     const result = await databaseService.addChallengeClaimant(challenge.id, message.author.id);
     if (!result.added) return;

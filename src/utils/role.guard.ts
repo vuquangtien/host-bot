@@ -7,15 +7,28 @@ import {
 import { config } from '../config/env';
 import { errorEmbed } from './embed.builder';
 
+async function replyPermissionError(
+  interaction: ChatInputCommandInteraction,
+  message: string
+): Promise<void> {
+  const payload = { embeds: [errorEmbed(message)] };
+  if (interaction.deferred) {
+    await interaction.editReply(payload);
+    return;
+  }
+  if (interaction.replied) {
+    await interaction.followUp({ ...payload, ephemeral: true });
+    return;
+  }
+  await interaction.reply({ ...payload, ephemeral: true });
+}
+
 export async function requireRole(
   interaction: ChatInputCommandInteraction,
   roleId: string
 ): Promise<boolean> {
   if (!interaction.guild || !interaction.member) {
-    await interaction.reply({
-      embeds: [errorEmbed('This command must be used in a server')],
-      ephemeral: true,
-    });
+    await replyPermissionError(interaction, 'This command must be used in a server');
     return false;
   }
 
@@ -24,10 +37,7 @@ export async function requireRole(
   const isAdministrator = member.permissions.has(PermissionFlagsBits.Administrator);
 
   if (!hasRole && !isAdministrator) {
-    await interaction.reply({
-      embeds: [errorEmbed('You do not have permission to use this command')],
-      ephemeral: true,
-    });
+    await replyPermissionError(interaction, 'You do not have permission to use this command');
     return false;
   }
 
@@ -49,9 +59,6 @@ export async function isAdmin(
 export async function requireAdmin(interaction: ChatInputCommandInteraction): Promise<boolean> {
   if (await isAdmin(interaction)) return true;
 
-  await interaction.reply({
-    embeds: [errorEmbed('You do not have permission to use this command')],
-    ephemeral: true,
-  });
+  await replyPermissionError(interaction, 'You do not have permission to use this command');
   return false;
 }

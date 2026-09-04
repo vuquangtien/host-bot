@@ -26,6 +26,9 @@ export interface EnvConfig {
   VERIFY_REMOVE_ROLE_ID?: string;
   VERIFY_GRANT_ROLE_ID?: string;
   VERIFY_ALLOWED_ROLE_ID?: string;
+  PUBLIC_CTF_CHANNELS: boolean;
+  GEMINI_API_KEY: string;
+  GEMINI_MODEL: string;
 }
 
 // CTF Database types
@@ -42,6 +45,48 @@ export interface CTFData {
   postEndOpened: boolean;
   starttime?: number;
   competitionEndtime?: number;
+}
+
+export type ChallengeSyncProvider = 'auto' | 'ctfd' | 'l3ak' | 'generic';
+
+export interface ChallengeSyncSource {
+  ctfId: number;
+  url: string;
+  provider: ChallengeSyncProvider;
+  enabled: boolean;
+  lastSyncAt?: number;
+  lastError?: string;
+  createdBy: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ChallengeParserRuleFields {
+  id?: string;
+  name: string;
+  category?: string;
+  points?: string;
+  description?: string;
+  connectionInfo?: string;
+  files?: string;
+  fileName?: string;
+  fileUrl?: string;
+  url?: string;
+}
+
+export interface ChallengeParserRule {
+  id: number;
+  domain: string;
+  sourceUrl: string;
+  endpoint: string;
+  method: 'GET';
+  arrayPath: string;
+  fields: ChallengeParserRuleFields;
+  createdBy: string;
+  failureCount: number;
+  lastError?: string;
+  createdAt: number;
+  updatedAt: number;
 }
 
 export const CHALLENGE_CATEGORIES = ['web', 'pwn', 'crypto', 'rev', 'forensics', 'misc'] as const;
@@ -82,6 +127,8 @@ export interface CTFChallenge {
   solvedAt?: number;
   writeupOwner?: string;
   writeupUrl?: string;
+  externalSource?: string;
+  externalId?: string;
   createdAt: number;
   updatedAt: number;
 }

@@ -3,6 +3,12 @@ import { CHALLENGE_CATEGORIES, ChallengeCategory } from '../types';
 const DEFAULT_CATEGORY_SET = new Set<string>(CHALLENGE_CATEGORIES);
 const CATEGORY_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 const MAX_CATEGORY_LENGTH = 32;
+const CATEGORY_ALIASES: Record<string, ChallengeCategory> = {
+  forensic: 'forensics',
+  forensiccs: 'forensics',
+  reverse: 'rev',
+  reversing: 'rev',
+};
 
 export const RESERVED_CHALLENGE_CHANNELS = [
   'announcements',
@@ -24,6 +30,7 @@ export function normalizeChallengeCategoryName(value: string): ChallengeCategory
     .slice(0, MAX_CATEGORY_LENGTH)
     .replace(/-+$/g, '');
 
+  if (CATEGORY_ALIASES[normalized]) return CATEGORY_ALIASES[normalized];
   return isChallengeCategory(normalized) ? normalized : null;
 }
 

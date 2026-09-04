@@ -52,6 +52,9 @@ function validateEnv(): EnvConfig {
   const viewAllRoleId = required('VIEW_ALL_CTF_ROLEID');
   const activeRoleId = required('ACTIVE_CTF_ROLEID');
   const adminRoleId = required('ADMIN_ROLE_ID');
+  const publicCTFChannels = ['1', 'true', 'yes', 'on'].includes(
+    (process.env.PUBLIC_CTF_CHANNELS ?? '').trim().toLocaleLowerCase()
+  );
   const discordIds = {
     SERVER_ID: serverId,
     VIEW_ALL_CTF_ROLEID: viewAllRoleId,
@@ -97,6 +100,9 @@ function validateEnv(): EnvConfig {
     VERIFY_REMOVE_ROLE_ID: process.env.VERIFY_REMOVE_ROLE_ID,
     VERIFY_GRANT_ROLE_ID: process.env.VERIFY_GRANT_ROLE_ID,
     VERIFY_ALLOWED_ROLE_ID: process.env.VERIFY_ALLOWED_ROLE_ID,
+    PUBLIC_CTF_CHANNELS: publicCTFChannels,
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY ?? '',
+    GEMINI_MODEL: process.env.GEMINI_MODEL ?? 'gemini-flash-lite-latest',
   };
 }
 

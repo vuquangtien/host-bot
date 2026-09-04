@@ -30,6 +30,10 @@ const READ_ONLY_CTF_CHANNELS = new Set(['announcements', 'solved', 'writeups']);
  * Discord helper service for managing channels, roles, and permissions
  */
 class DiscordService {
+  private usesPublicCTFChannels(): boolean {
+    return config.PUBLIC_CTF_CHANNELS;
+  }
+
   private async mayManagePermissions(channelId: string, channelName: string): Promise<boolean> {
     const managed = await databaseService.isManagedDiscordChannel(channelId);
     if (!managed) {
@@ -59,10 +63,25 @@ class DiscordService {
     return true;
   }
 
+  private async ensureBotCanManageChannel(
+    guild: Guild,
+    channel: NonThreadGuildBasedChannel
+  ): Promise<void> {
+    const botMember = guild.members.me ?? (await guild.members.fetchMe());
+    await this.editManagedPermissionOverwrite(channel, botMember.id, {
+      ViewChannel: true,
+      ManageChannels: true,
+      SendMessages: true,
+      ReadMessageHistory: true,
+    });
+  }
+
   async reconcileCategoryChildrenPermissions(
     category: CategoryChannel,
     perCtfRoleId?: string
   ): Promise<void> {
+    if (this.usesPublicCTFChannels()) return;
+
     const managedChannelIds = await databaseService.getManagedDiscordChannelIds(category.id);
     const managedRoleIds = [config.ACTIVE_CTF_ROLEID, config.VIEW_ALL_CTF_ROLEID, perCtfRoleId];
     const categoryAllowedRoleIds = managedRoleIds.filter((roleId): roleId is string => {
@@ -384,6 +403,10 @@ class DiscordService {
         logger.warn(`Channel is not a category: ${categoryId}`);
         return false;
       }
+      if (this.usesPublicCTFChannels()) {
+        logger.info(`Archived category without permission changes: ${category.name}`);
+        return true;
+      }
       if (!(await this.mayManagePermissions(category.id, category.name))) return true;
 
       await this.editManagedPermissionOverwrite(category, guild.roles.everyone, {
@@ -474,6 +497,10 @@ class DiscordService {
       if (!category.name.startsWith('[UNLISTED]')) {
         await category.setName(`[UNLISTED] ${category.name}`.slice(0, 100));
       }
+      if (this.usesPublicCTFChannels()) {
+        logger.info(`Unlisted category without permission changes: ${category.name}`);
+        return true;
+      }
       if (!(await this.mayManagePermissions(category.id, category.name))) return true;
 
       await this.editManagedPermissionOverwrite(category, guild.roles.everyone, {
@@ -524,6 +551,10 @@ class DiscordService {
       if (newName.startsWith('[UNLISTED]')) {
         newName = newName.replace('[UNLISTED]', '').trim();
         await category.setName(newName);
+      }
+      if (this.usesPublicCTFChannels()) {
+        logger.info(`Re-listed category without permission changes: ${category.name}`);
+        return null;
       }
 
       // Create role
@@ -583,7 +614,10 @@ class DiscordService {
       throw new Error(`applyLivePermissions: category not found: ${categoryId}`);
     }
     const category = channel;
+    if (this.usesPublicCTFChannels()) return;
     if (!(await this.mayManagePermissions(category.id, category.name))) return;
+
+    await this.ensureBotCanManageChannel(guild, category);
 
     // @everyone HAS ViewChannel in this guild's base permissions, so it must be
     // denied explicitly — role allows alone would hide nothing.
@@ -630,6 +664,7 @@ class DiscordService {
       throw new Error(`applyEndedPermissions: category not found: ${categoryId}`);
     }
     const category = channel;
+    if (this.usesPublicCTFChannels()) return;
     if (!(await this.mayManagePermissions(category.id, category.name))) return;
 
     await this.editManagedPermissionOverwrite(category, guild.roles.everyone, {

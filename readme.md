@@ -16,86 +16,35 @@ Hweplir is a Discord bot for managing CTF participation in one server. It is wri
 - Can optionally provide a configurable server-role verification command.
 - Handles pagination and confirmation buttons for interactive commands.
 - Tracks challenge threads, claims, status, solves, points, writeups, and a pinned live dashboard.
-- Sends persisted CTF reminders and refreshes countdowns every five minutes.
+- Can sync challenge threads automatically from Gemini-discovered parser recipes cached in memory.
+- Sends persisted CTF reminders and refreshes countdowns every minute.
 - Logs bot activity and errors with Winston.
 
 ## Commands
 
 Slash commands are deployed to the guild configured by `SERVER_ID` whenever the bot starts.
-In the tables below, `<value>` is required and `[value]` is optional. See
-[`docs/commands.md`](docs/commands.md) for detailed behavior.
+In the table below, `<value>` is required and `[value]` is optional.
 
-### CTFtime commands
+### Core commands
 
-| Command | Access | Purpose |
-| --- | --- | --- |
-| `/ct-info_find <search-key>` | Member | Search CTFtime by event ID or event name. |
-| `/ct-info_ongo` | Member | Show currently ongoing CTFs. |
-| `/ct-info_upco [page] [step]` | Member | Show upcoming CTFs with pagination. |
-| `/ct-reg <ctftime-id>` | Admin | Register a CTF from CTFtime and create its Discord resources. |
-| `/ct-regacc <username> <password> [cate_id]` | Admin | Create or update shared credentials for either a CTFtime or manual CTF in its private information channel. |
+| Command       | Access            | Purpose                                                                                                                               |
+| ------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `/ctf create` | Admin             | Create a CTF area from one challenge URL and enable auto-sync. `name`, `ctftime_id`, `start_at`, and `end_at` are optional overrides. |
+| `/solved`     | Active CTF member | Mark the current challenge thread as solved, update dashboard, and prompt for a writeup link.                                         |
 
-`/ct-reg` and `/ct-regacc` require `ADMIN_ROLE_ID` or Discord Administrator permission.
-For manual events, `/ct-regacc` creates and pins a dedicated account message, stores its message ID, and removes the credentials automatically when the competition ends. Credentials are never posted to the `announcements` channel.
+Only these commands are registered by default. Older admin, CTFtime lookup, challenge, writeup, help, whoami, and training-task commands remain in source modules but are intentionally not deployed in the user-friendly flow.
 
-### General commands
+`/ctf create` only requires `challenge_url`. If `name` is omitted, the bot derives it from the URL. If `start_at` and `end_at` are omitted, the CTF starts immediately and stays live for seven days. Optional `start_at` and `end_at` accept `YYYY-MM-DD HH:mm` in Vietnam time (UTC+7), ISO 8601 with an explicit timezone, a Unix timestamp, or a Discord timestamp such as `<t:1786811400:F>`. `hide_after` is the number of days after the competition ends before archiving and defaults to 7.
 
-| Command | Access | Purpose |
-| --- | --- | --- |
-| `/help` | Member | Show a private quick-start guide for CTF, challenge, solve, and write-up commands. |
-| `/whoami` | Member | Show bot information, uptime, memory usage, and CTF counts. |
-| `/c-list [order] [page] [step]` | Member | List registered CTFs from the local database. |
-| `/c-view <ctf-name>` | Member | Add or remove the selected per-CTF role. This role grants post-event access; live access is controlled by `ACTIVE_CTF_ROLEID`. |
+### Challenge sync
 
-### Challenge commands
+When a CTF has a `challenge_url`, the scheduler checks it every minute while the CTF is live. New challenges are turned into Discord threads automatically, grouped by normalized category channels.
 
-Challenge-management commands must be used in a registered CTF category. Except for writeup commands, they require `ACTIVE_CTF_ROLEID` or Discord Administrator permission.
+Challenge discovery runs in Gemini-assisted mode. If a parser recipe is already cached for the URL in the current bot process, the bot uses that recipe directly. If not, it asks Gemini to infer a safe parser recipe from public page/API samples. Recipes can target JSON APIs, static JavaScript data files, or server-rendered HTML challenge cards. If no reusable recipe works, the bot falls back to direct Gemini extraction and caches the extracted challenge list by a normalized content fingerprint, so unchanged pages are reused without another Gemini call. After a bot restart, Gemini may rediscover the recipe or extraction from the URL. Legacy CTFd/L3ak/generic parsers are not used in this mode.
 
-| Command | Where | Purpose |
-| --- | --- | --- |
-| `/challenge create <name> [extra_category] [points]` | A default or registered custom challenge channel | Create a tracked thread. Its primary category comes from the channel; one additional registered category is optional. |
-| `/challenge category-add <name>` | Any channel/thread inside a registered CTF | **Admin:** create or register a custom category for that CTF, such as `hardware`, `blockchain`, or `ai-ml`. |
-| `/challenge list [page] [category]` | Registered CTF channel or challenge thread | View all challenges in pages of 10, optionally filtered by a registered category. |
-| `/challenge claim` | Challenge thread | Add yourself to the claimant list. |
-| `/challenge release` | Challenge thread | Remove yourself from the claimant list. |
-| `/challenge status <value>` | Challenge thread | Set the state to `working`, `idea`, or `unclaimed`. |
-| `/challenge dashboard` | Registered CTF channel or challenge thread | Create or refresh the pinned progress dashboard. |
-| `/solved` | Challenge thread | Persist and acknowledge the solve immediately, then asynchronously show the caller as confirmer, rename the thread, refresh the dashboard, and post a congratulations message without a solver list. |
-| `/writeup claim` | Solved challenge thread | Claim responsibility for the challenge writeup. |
-| `/writeup release` | Solved challenge thread | Return a mistakenly claimed writeup task. The current owner or an administrator may release it. |
-| `/writeup submit <url>` | Solved challenge thread | Submit an HTTP(S) writeup URL and publish its challenge, category, author, URL, and thread in `writeups`; only the claimant can submit it. |
+Sending the first member message in an unsolved challenge thread silently adds that member to the claimant list and refreshes the thread/dashboard. If a challenge thread was created manually in a challenge channel, the bot registers it first.
 
-Sending the first member message in an unsolved challenge thread silently adds that member to the claimant list and refreshes the thread/dashboard. If the thread was created manually in a challenge channel, the bot registers it first. Multiple members may claim the same challenge.
-
-The member who runs `/challenge create` is added to the new Discord thread immediately. This only joins the thread and does not claim the challenge or change its `[OPEN]` status.
-
-After `/solved`, the bot posts a write-up task in the challenge thread. One member claims it with `/writeup claim`, may return a mistaken claim with `/writeup release`, then submits an HTTP(S) URL with `/writeup submit url:<link>`. The completed write-up is published in `writeups` before the thread is locked and archived.
-
-Challenge solve messages are sent to read-only `solved`, and completed write-ups are sent to read-only `writeups`. Lifecycle reminders and schedule updates remain in `announcements`. New CTF registrations create all three system channels; existing events receive missing channels automatically when their dashboard refreshes or the relevant notification is sent.
-
-Custom challenge categories are scoped to one CTF. Run `/challenge category-add name:<name>` inside that CTF; the bot creates a text channel that initially inherits the parent category and registers it in SQLite. Registering an existing channel preserves its custom visibility overwrites. Challenges created there use it as their primary category, and registered custom categories also appear in `extra_category` autocomplete.
-
-The pinned dashboard stays compact when an event has many challenges. Press `Xem challenges` to open a private paginated list, then use `Trang trước` and `Trang sau`. `/challenge list` provides the same buttons and can additionally filter by `category`.
-
-### Admin commands
-
-These commands require `ADMIN_ROLE_ID` or Discord Administrator permission unless noted otherwise.
-
-| Command | Purpose |
-| --- | --- |
-| `/admin-hide` | Immediately process CTF categories that have passed their archive time. |
-| `/admin-reg_special <name> <start_at> <end_at> [hide_after]` | Register a manual CTF with its real competition schedule. |
-| `/admin-set-time <start_at> <end_at> [hide_after] [cate_id]` | Correct the schedule of an existing manual CTF and reset its persisted reminders. |
-| `/admin-delete <search_id>` | Find a CTF by CTFtime/category ID and choose whether to delete everything or keep its channels private. |
-| `/admin-add [cate_id]` | Import an existing Discord category into the CTF database; the current category is used when omitted. |
-| `/admin-deny-role` | Deny the configured deny role from viewing existing CTF categories. |
-| `/admin-fix` | Rebuild lifecycle permissions for live, ended, and archived CTF categories. |
-| `/admin-unsolve` | Undo an accidental challenge solve. |
-| `/verifyg10 <user>` | Swap the configured guest/member roles; authorization uses `VERIFY_ALLOWED_ROLE_ID`. |
-
-`start_at` and `end_at` accept `YYYY-MM-DD HH:mm` in Vietnam time (UTC+7), ISO 8601 with an explicit timezone, a Unix timestamp, or a Discord timestamp such as `<t:1786811400:F>`. `hide_after` is the number of days after the competition ends before archiving and defaults to 7.
-
-`/verifyg10` is registered only when `VERIFY_REMOVE_ROLE_ID`, `VERIFY_GRANT_ROLE_ID`, and `VERIFY_ALLOWED_ROLE_ID` are all configured.
+After `/solved`, users can post an HTTP(S) writeup link directly in the thread. The bot records it, publishes the writeup announcement in `writeups`, then locks and archives the thread.
 
 ### Disabled club-task commands
 
@@ -107,7 +56,7 @@ The older training-task workflow is implemented but not currently registered, so
 2. **Competition ended:** the scheduler removes shared credentials, keeps `@everyone` denied, and grants the per-CTF role plus `VIEW_ALL_CTF_ROLEID`. It also posts the end reminder and refreshes the dashboard.
 3. **Archive time reached:** CTFtime events are archived seven days after the competition ends. Manual events are archived `hide_after` days after their supplied `end_at` time.
 
-The scheduler runs every five minutes. Reminder delivery is persisted in SQLite, so restarting the bot does not duplicate already-sent 24-hour, 1-hour, start, 3-hours-left, 1-hour-left, or end notifications. Lifecycle notifications use read-only `announcements`, challenge solves use `solved`, and completed write-ups use `writeups`.
+The scheduler runs every minute. Reminder delivery is persisted in SQLite, so restarting the bot does not duplicate already-sent 24-hour, 1-hour, start, 3-hours-left, 1-hour-left, or end notifications. Lifecycle notifications use read-only `announcements`, challenge solves use `solved`, and completed write-ups use `writeups`.
 
 Lifecycle permission updates never call Discord's destructive permission sync. Permission ownership is explicit and persisted in SQLite: the bot may edit only categories and channels that it created and recorded. Pre-existing resources, including system-name channels such as `announcements`, are treated as manually managed and their permission overwrites are never changed. There is no automatic adoption of resources created before this ownership policy. Synced bot-owned channels continue inheriting naturally, while custom overwrites remain unsynced and keep their explicit denies.
 
@@ -137,6 +86,9 @@ Optional environment variables:
 DB_PATH=optional_sqlite_database_path
 LOG_CHANNELID=channel_for_bot_logs
 DENY_CTF_ROLEID=role_blocked_from_ctf_categories
+PUBLIC_CTF_CHANNELS=true_or_false_for_public_test_servers
+GEMINI_API_KEY=optional_gemini_key_for_in_memory_parser_recipe_discovery
+GEMINI_MODEL=gemini-flash-lite-latest
 VERIFY_REMOVE_ROLE_ID=optional_guest_role
 VERIFY_GRANT_ROLE_ID=optional_member_role
 VERIFY_ALLOWED_ROLE_ID=optional_verifier_role
@@ -145,6 +97,8 @@ GITHUB_TOKEN=only_needed_when_github_invites_are_re-enabled
 GH_INVITE_REPO_OWNER=only_needed_when_github_invites_are_re-enabled
 GH_INVITE_REPO_NAME=only_needed_when_github_invites_are_re-enabled
 ```
+
+Set `PUBLIC_CTF_CHANNELS=true` for a lightweight test server where CTF categories and challenge channels should stay public. In that mode, the bot skips private permission overwrites and only creates the Discord structure.
 
 ## Run the bot
 

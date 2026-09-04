@@ -48,6 +48,19 @@ async function run(): Promise<void> {
       category: 'web',
       points: 100,
     });
+    const alreadySolved = await databaseService.createChallenge({
+      ctfId,
+      threadId: 'already-solved-thread',
+      channelId: 'web-channel',
+      name: 'Repair Me',
+      category: 'web',
+      points: 200,
+    });
+    await databaseService.solveChallenge({
+      challengeId: alreadySolved.id,
+      recordedBy: 'previous-solver',
+      solvedAt: 1_500,
+    });
 
     challengeService.renameThread = async () => pending();
     challengeService.announceSolved = async () => pending();
@@ -63,7 +76,7 @@ async function run(): Promise<void> {
         send: () => pending(),
       },
       member: {
-        roles: { cache: { has: (roleId: string) => roleId === process.env.ACTIVE_CTF_ROLEID } },
+        roles: { cache: { has: () => false } },
         permissions: { has: () => false },
       },
       user: { id: 'solver-user' },
@@ -98,6 +111,60 @@ async function run(): Promise<void> {
 
     for (const resolve of pendingResolvers) resolve();
     await new Promise<void>((resolve) => setImmediate(resolve));
+
+    let repairedRenames = 0;
+    let repairedDashboards = 0;
+    let duplicateAnnouncements = 0;
+    challengeService.renameThread = async () => {
+      repairedRenames++;
+    };
+    challengeService.announceSolved = async () => {
+      duplicateAnnouncements++;
+    };
+    challengeService.refreshDashboard = async () => {
+      repairedDashboards++;
+    };
+
+    const repairReplies: unknown[] = [];
+    let repairDeferred = false;
+    const repairInteraction = {
+      guild: {},
+      channel: {
+        id: 'already-solved-thread',
+        isThread: () => true,
+        send: async () => undefined,
+      },
+      member: {
+        roles: { cache: { has: () => false } },
+        permissions: { has: () => false },
+      },
+      user: { id: 'solver-user' },
+      get deferred() {
+        return repairDeferred;
+      },
+      replied: false,
+      deferReply: async () => {
+        repairDeferred = true;
+      },
+      editReply: async (payload: unknown) => {
+        repairReplies.push(payload);
+      },
+      reply: async (payload: unknown) => {
+        repairReplies.push(payload);
+      },
+    } as unknown as ChatInputCommandInteraction;
+
+    await solveCommand.execute(repairInteraction);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.equal(repairReplies.length, 1, 'already solved repair should acknowledge once');
+    assert.equal(repairedRenames, 1, 'already solved repair should retry thread rename');
+    assert.equal(repairedDashboards, 1, 'already solved repair should retry dashboard refresh');
+    assert.equal(
+      duplicateAnnouncements,
+      0,
+      'already solved repair should not send a duplicate solved announcement'
+    );
   } finally {
     challengeService.renameThread = originalMethods.renameThread;
     challengeService.announceSolved = originalMethods.announceSolved;

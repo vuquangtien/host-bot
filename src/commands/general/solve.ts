@@ -1,10 +1,8 @@
 import { ChatInputCommandInteraction, SlashCommandBuilder } from 'discord.js';
 import { Command } from '../../types';
-import { config } from '../../config/env';
 import databaseService from '../../services/database.service';
 import challengeService from '../../services/challenge.service';
 import { errorEmbed, successEmbed, warningEmbed } from '../../utils/embed.builder';
-import { requireRole } from '../../utils/role.guard';
 import logger from '../../utils/logger';
 import { formatChallengeCategories } from '../../utils/challenge-category';
 import { BestEffortTask, runBestEffortTasks } from '../../utils/best-effort';
@@ -44,6 +42,27 @@ async function finishSolveFollowUps(
   logger.warn(`Solve follow-ups incomplete for ${challengeName}`);
 }
 
+function repairSolvedTasks(
+  interaction: ChatInputCommandInteraction,
+  ctfKey: string,
+  ctfData: Parameters<typeof challengeService.refreshDashboard>[2],
+  challenge: Awaited<ReturnType<typeof databaseService.getChallengeByThread>>
+): BestEffortTask[] {
+  if (!interaction.guild || !challenge) return [];
+
+  const guild = interaction.guild;
+  return [
+    {
+      name: 'đổi tên thread',
+      run: () => challengeService.renameThread(guild, challenge),
+    },
+    {
+      name: 'cập nhật dashboard',
+      run: () => challengeService.refreshDashboard(guild, ctfKey, ctfData),
+    },
+  ];
+}
+
 const command: Command = {
   data: new SlashCommandBuilder()
     .setName('solved')
@@ -59,7 +78,6 @@ const command: Command = {
         });
         return;
       }
-      if (!(await requireRole(interaction, config.ACTIVE_CTF_ROLEID))) return;
       await interaction.deferReply({ ephemeral: true });
 
       const challenge = await databaseService.getChallengeByThread(interaction.channel.id);
@@ -69,15 +87,26 @@ const command: Command = {
         });
         return;
       }
-      if (challenge.status === 'solved') {
-        await interaction.editReply({
-          embeds: [errorEmbed('Challenge này đã được đánh dấu solved.')],
-        });
-        return;
-      }
 
       const ctf = await databaseService.findByKey(String(challenge.ctfId));
       if (!ctf) throw new Error('CTF not found');
+
+      if (challenge.status === 'solved') {
+        await interaction.editReply({
+          embeds: [
+            warningEmbed(
+              'Challenge đã solved rồi',
+              'Mình sẽ cập nhật lại tên thread và dashboard nếu Discord bị hụt ở lần trước.'
+            ),
+          ],
+        });
+
+        const tasks = repairSolvedTasks(interaction, ctf.key, ctf.data, challenge);
+        void finishSolveFollowUps(interaction, challenge.name, tasks).catch((error) => {
+          logger.error(`Unexpected solve repair failure for ${challenge.name}:`, error);
+        });
+        return;
+      }
 
       const solveTime = Math.floor(Date.now() / 1000);
 
@@ -95,10 +124,7 @@ const command: Command = {
       const guild = interaction.guild;
       const thread = interaction.channel;
       const tasks: BestEffortTask[] = [
-        {
-          name: 'đổi tên thread',
-          run: () => challengeService.renameThread(guild, updated),
-        },
+        ...repairSolvedTasks(interaction, ctf.key, ctf.data, updated),
         {
           name: 'gửi thông báo',
           run: () =>
@@ -112,17 +138,12 @@ const command: Command = {
             ),
         },
         {
-          name: 'cập nhật dashboard',
-          run: () => challengeService.refreshDashboard(guild, ctf.key, ctf.data),
-        },
-        {
-          name: 'tạo task write-up',
+          name: 'nhắc write-up',
           run: () =>
             thread.send({
               content:
-                `[WRITEUP TASK] **${challenge.name}** chưa có người nhận viết write-up.\n` +
-                'Nhận task: `/writeup claim`\n' +
-                'Nộp bài: `/writeup submit url:<link>`',
+                `[WRITEUP] Khi có bài, gửi thẳng link HTTP(S) vào thread này.\n` +
+                'Bot sẽ tự đăng sang #writeups rồi lock thread.',
               allowedMentions: { parse: [] },
             }),
         },
