@@ -50,6 +50,10 @@ async function run(): Promise<void> {
       createOptions.some((option) => option.name === 'cookie'),
       '/ctf create should allow optional session cookie'
     );
+    assert.ok(
+      createOptions.some((option) => option.name === 'token'),
+      '/ctf create should allow optional API bearer token'
+    );
 
     const clearCategory = ctfCommand.options?.find((option) => option.name === 'clear-category');
     const clearOptions = 'options' in (clearCategory ?? {}) ? (clearCategory?.options ?? []) : [];
@@ -81,11 +85,13 @@ async function run(): Promise<void> {
       authUsername: 'team-user',
       authPassword: 'team-password',
       authCookie: 'session=abc; csrftoken=def',
+      authToken: 'Bearer test-api-token',
       createdBy: '100000000000000005',
     });
     assert.equal(source.authUsername, 'team-user');
     assert.equal(source.authPassword, 'team-password');
     assert.equal(source.authCookie, 'session=abc; csrftoken=def');
+    assert.equal(source.authToken, 'Bearer test-api-token');
     const updatedSource = await databaseService.upsertChallengeSyncSource({
       ctfId,
       url: 'https://ctf.example/new-challenges',
@@ -95,6 +101,7 @@ async function run(): Promise<void> {
     assert.equal(updatedSource.authUsername, 'team-user');
     assert.equal(updatedSource.authPassword, 'team-password');
     assert.equal(updatedSource.authCookie, 'session=abc; csrftoken=def');
+    assert.equal(updatedSource.authToken, 'Bearer test-api-token');
 
     console.log('ctf command schema tests passed');
   } finally {
