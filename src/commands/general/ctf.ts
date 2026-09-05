@@ -140,9 +140,20 @@ async function createFromCTFtime(
 
   const existing = await databaseService.findByCTFTimeId(ctftimeId);
   if (existing) {
+    const syncMessage = await syncNow(
+      interaction,
+      existing.key,
+      sourceUrl,
+      provider,
+      authUsername,
+      authPassword
+    );
     await interaction.editReply({
       embeds: [
-        warningEmbed('CTF đã tồn tại', `Giải này đã có channel: <#${existing.data.channel}>.`),
+        successEmbed(
+          `Giải này đã có channel: <#${existing.data.channel}>.\n` +
+            `Đã cập nhật nguồn sync/login nếu có.${syncMessage}`
+        ),
       ],
     });
     return;
@@ -296,12 +307,25 @@ async function createManual(
     return;
   }
 
-  const duplicate = (await databaseService.getAllCTFs()).some(
+  const duplicate = (await databaseService.getAllCTFs()).find(
     (ctf) => ctf.data.name.toLocaleLowerCase() === name.toLocaleLowerCase()
   );
   if (duplicate) {
+    const syncMessage = await syncNow(
+      interaction,
+      duplicate.key,
+      sourceUrl,
+      provider,
+      authUsername,
+      authPassword
+    );
     await interaction.editReply({
-      embeds: [warningEmbed('CTF đã tồn tại', 'Đã có một CTF cùng tên trong database.')],
+      embeds: [
+        successEmbed(
+          `CTF **${duplicate.data.name}** đã tồn tại tại <#${duplicate.data.channel}>.\n` +
+            `Đã cập nhật nguồn sync/login nếu có.${syncMessage}`
+        ),
+      ],
     });
     return;
   }

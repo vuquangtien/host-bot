@@ -1099,8 +1099,8 @@ class DatabaseService {
            url = excluded.url,
            provider = excluded.provider,
            enabled = excluded.enabled,
-           auth_username = excluded.auth_username,
-           auth_password = excluded.auth_password,
+           auth_username = COALESCE(excluded.auth_username, auth_username),
+           auth_password = COALESCE(excluded.auth_password, auth_password),
            last_error = NULL,
            updated_at = strftime('%s','now')`
       )

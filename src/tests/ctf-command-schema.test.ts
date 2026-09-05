@@ -80,6 +80,14 @@ async function run(): Promise<void> {
     });
     assert.equal(source.authUsername, 'team-user');
     assert.equal(source.authPassword, 'team-password');
+    const updatedSource = await databaseService.upsertChallengeSyncSource({
+      ctfId,
+      url: 'https://ctf.example/new-challenges',
+      provider: 'auto',
+      createdBy: '100000000000000005',
+    });
+    assert.equal(updatedSource.authUsername, 'team-user');
+    assert.equal(updatedSource.authPassword, 'team-password');
 
     console.log('ctf command schema tests passed');
   } finally {
