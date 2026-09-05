@@ -90,6 +90,7 @@ interface ChallengeSyncSourceRow {
   enabled: number;
   auth_username: string | null;
   auth_password: string | null;
+  auth_cookie: string | null;
   last_sync_at: number | null;
   last_error: string | null;
   created_by: string;
@@ -369,6 +370,7 @@ class DatabaseService {
           enabled INTEGER NOT NULL DEFAULT 1,
           auth_username TEXT,
           auth_password TEXT,
+          auth_cookie TEXT,
           last_sync_at INTEGER,
           last_error TEXT,
           created_by TEXT NOT NULL,
@@ -433,6 +435,7 @@ class DatabaseService {
       this.ensureChallengeSyncProviderConstraint();
       this.addColumnIfMissing('ctf_challenge_sync_sources', 'auth_username', 'TEXT');
       this.addColumnIfMissing('ctf_challenge_sync_sources', 'auth_password', 'TEXT');
+      this.addColumnIfMissing('ctf_challenge_sync_sources', 'auth_cookie', 'TEXT');
       this.db.exec(`
         CREATE UNIQUE INDEX IF NOT EXISTS idx_ctf_challenges_external
           ON ctf_challenges(ctf_id, external_source, external_id)
@@ -1083,24 +1086,27 @@ class DatabaseService {
     enabled?: boolean;
     authUsername?: string | null;
     authPassword?: string | null;
+    authCookie?: string | null;
     createdBy: string;
   }): Promise<ChallengeSyncSource> {
     const normalizedUrl = input.url.trim();
     if (!normalizedUrl) throw new Error('Challenge sync URL cannot be empty');
     const authUsername = input.authUsername?.trim() || null;
     const authPassword = input.authPassword || null;
+    const authCookie = input.authCookie?.trim() || null;
 
     this.db
       .prepare(
         `INSERT INTO ctf_challenge_sync_sources
-          (ctf_id, url, provider, enabled, auth_username, auth_password, created_by)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+          (ctf_id, url, provider, enabled, auth_username, auth_password, auth_cookie, created_by)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(ctf_id) DO UPDATE SET
            url = excluded.url,
            provider = excluded.provider,
            enabled = excluded.enabled,
            auth_username = COALESCE(excluded.auth_username, auth_username),
            auth_password = COALESCE(excluded.auth_password, auth_password),
+           auth_cookie = COALESCE(excluded.auth_cookie, auth_cookie),
            last_error = NULL,
            updated_at = strftime('%s','now')`
       )
@@ -1111,6 +1117,7 @@ class DatabaseService {
         input.enabled === false ? 0 : 1,
         authUsername,
         authPassword,
+        authCookie,
         input.createdBy
       );
 
@@ -1745,6 +1752,7 @@ class DatabaseService {
       enabled: row.enabled === 1,
       authUsername: row.auth_username ?? undefined,
       authPassword: row.auth_password ?? undefined,
+      authCookie: row.auth_cookie ?? undefined,
       lastSyncAt: row.last_sync_at ?? undefined,
       lastError: row.last_error ?? undefined,
       createdBy: row.created_by,

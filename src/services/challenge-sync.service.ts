@@ -457,6 +457,17 @@ class ChallengeSyncService {
     }
   }
 
+  private rememberCookieHeader(session: FetchSession, cookieHeader: string): void {
+    const normalized = cookieHeader.replace(/^cookie\s*:\s*/i, '').trim();
+    for (const part of normalized.split(';')) {
+      const pair = part.trim();
+      if (!pair) continue;
+      const separator = pair.indexOf('=');
+      if (separator <= 0) continue;
+      session.cookies.set(pair.slice(0, separator).trim(), pair.slice(separator + 1).trim());
+    }
+  }
+
   private attrValue(attrs: string, name: string): string | undefined {
     const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'<>]+))`, 'i');
     const match = pattern.exec(attrs);
@@ -595,12 +606,19 @@ class ChallengeSyncService {
   ): Promise<FetchSession | undefined> {
     const username = source.authUsername?.trim();
     const password = source.authPassword;
-    if (!username || !password) return undefined;
+    const cookie = source.authCookie?.trim();
+    if (!username && !password && !cookie) return undefined;
 
     const session: FetchSession = {
       cookies: new Map<string, string>(),
-      authenticated: false,
+      authenticated: Boolean(cookie),
     };
+    if (cookie) {
+      this.rememberCookieHeader(session, cookie);
+      logger.info(`Using configured challenge sync cookie for ${baseURL.hostname}`);
+    }
+    if (!username || !password) return session;
+
     const queue = this.loginCandidateURLs(baseURL);
     const attempted = new Set<string>();
 

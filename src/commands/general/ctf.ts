@@ -85,7 +85,8 @@ async function syncNow(
   sourceUrl: string | null,
   provider: ChallengeSyncProvider,
   authUsername?: string,
-  authPassword?: string
+  authPassword?: string,
+  authCookie?: string
 ): Promise<string> {
   if (!interaction.guild) return '';
 
@@ -100,6 +101,7 @@ async function syncNow(
       provider,
       authUsername,
       authPassword,
+      authCookie,
       createdBy: interaction.user.id,
     });
   }
@@ -134,7 +136,8 @@ async function createFromCTFtime(
   sourceUrl: string | null,
   provider: ChallengeSyncProvider,
   authUsername?: string,
-  authPassword?: string
+  authPassword?: string,
+  authCookie?: string
 ): Promise<void> {
   if (!interaction.guild) return;
 
@@ -146,7 +149,8 @@ async function createFromCTFtime(
       sourceUrl,
       provider,
       authUsername,
-      authPassword
+      authPassword,
+      authCookie
     );
     await interaction.editReply({
       embeds: [
@@ -216,7 +220,8 @@ async function createFromCTFtime(
     sourceUrl,
     provider,
     authUsername,
-    authPassword
+    authPassword,
+    authCookie
   );
   const archiveSummary = await archiveExpiredCTFs(interaction);
   await interaction.editReply({
@@ -234,7 +239,8 @@ async function createManual(
   sourceUrl: string | null,
   provider: ChallengeSyncProvider,
   authUsername?: string,
-  authPassword?: string
+  authPassword?: string,
+  authCookie?: string
 ): Promise<void> {
   if (!interaction.guild) return;
 
@@ -317,7 +323,8 @@ async function createManual(
       sourceUrl,
       provider,
       authUsername,
-      authPassword
+      authPassword,
+      authCookie
     );
     await interaction.editReply({
       embeds: [
@@ -379,7 +386,8 @@ async function createManual(
     sourceUrl,
     provider,
     authUsername,
-    authPassword
+    authPassword,
+    authCookie
   );
   const archiveSummary = await archiveExpiredCTFs(interaction);
   await interaction.editReply({
@@ -502,6 +510,12 @@ const command: Command = {
             .setDescription('Mật khẩu/token CTF nếu trang challenge cần đăng nhập')
             .setMaxLength(500)
         )
+        .addStringOption((option) =>
+          option
+            .setName('cookie')
+            .setDescription('Cookie session nếu trang không có form login thường')
+            .setMaxLength(2000)
+        )
     )
     .addSubcommand((subcommand) =>
       subcommand
@@ -555,6 +569,7 @@ const command: Command = {
       const provider: ChallengeSyncProvider = 'auto';
       const authUsername = interaction.options.getString('username')?.trim();
       const authPassword = interaction.options.getString('password') ?? undefined;
+      const authCookie = interaction.options.getString('cookie')?.trim();
       if ((authUsername && !authPassword) || (!authUsername && authPassword)) {
         await interaction.editReply({
           embeds: [errorEmbed('Nếu trang cần đăng nhập, hãy nhập đủ cả `username` và `password`.')],
@@ -569,12 +584,13 @@ const command: Command = {
           sourceUrl,
           provider,
           authUsername,
-          authPassword
+          authPassword,
+          authCookie
         );
         return;
       }
 
-      await createManual(interaction, sourceUrl, provider, authUsername, authPassword);
+      await createManual(interaction, sourceUrl, provider, authUsername, authPassword, authCookie);
     } catch (error) {
       logger.error('CTF command failed:', error);
       const payload = { embeds: [errorEmbed('Không hoàn tất được thao tác CTF.')] };
