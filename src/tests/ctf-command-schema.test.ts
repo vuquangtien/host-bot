@@ -38,6 +38,14 @@ async function run(): Promise<void> {
       false,
       '/ctf create should not expose parser/provider choices'
     );
+    assert.ok(
+      createOptions.some((option) => option.name === 'username'),
+      '/ctf create should allow optional login username'
+    );
+    assert.ok(
+      createOptions.some((option) => option.name === 'password'),
+      '/ctf create should allow optional login password'
+    );
 
     const clearCategory = ctfCommand.options?.find((option) => option.name === 'clear-category');
     const clearOptions = 'options' in (clearCategory ?? {}) ? (clearCategory?.options ?? []) : [];
@@ -50,6 +58,28 @@ async function run(): Promise<void> {
       clearOptions.filter((option) => option.required).map((option) => option.name),
       ['category', 'confirm']
     );
+
+    const ctfId = await databaseService.addCTF({
+      ctftimeid: 0,
+      role: '100000000000000006',
+      cate: '100000000000000007',
+      name: 'Auth Test CTF',
+      infom: '100000000000000008',
+      channel: '100000000000000009',
+      endtime: Math.floor(Date.now() / 1000) + 86_400,
+      starttime: Math.floor(Date.now() / 1000) - 60,
+      competitionEndtime: Math.floor(Date.now() / 1000) + 3_600,
+    });
+    const source = await databaseService.upsertChallengeSyncSource({
+      ctfId,
+      url: 'https://ctf.example/challenges',
+      provider: 'auto',
+      authUsername: 'team-user',
+      authPassword: 'team-password',
+      createdBy: '100000000000000005',
+    });
+    assert.equal(source.authUsername, 'team-user');
+    assert.equal(source.authPassword, 'team-password');
 
     console.log('ctf command schema tests passed');
   } finally {

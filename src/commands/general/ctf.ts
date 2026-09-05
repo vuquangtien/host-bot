@@ -83,7 +83,9 @@ async function syncNow(
   interaction: ChatInputCommandInteraction,
   ctfKey: string,
   sourceUrl: string | null,
-  provider: ChallengeSyncProvider
+  provider: ChallengeSyncProvider,
+  authUsername?: string,
+  authPassword?: string
 ): Promise<string> {
   if (!interaction.guild) return '';
 
@@ -96,6 +98,8 @@ async function syncNow(
       ctfId: Number(ctf.key),
       url: sourceUrl,
       provider,
+      authUsername,
+      authPassword,
       createdBy: interaction.user.id,
     });
   }
@@ -128,7 +132,9 @@ async function createFromCTFtime(
   interaction: ChatInputCommandInteraction,
   ctftimeId: number,
   sourceUrl: string | null,
-  provider: ChallengeSyncProvider
+  provider: ChallengeSyncProvider,
+  authUsername?: string,
+  authPassword?: string
 ): Promise<void> {
   if (!interaction.guild) return;
 
@@ -193,7 +199,14 @@ async function createFromCTFtime(
     )
     .catch((error) => logger.warn(`Could not create scheduled event for ${ctfInfo.title}:`, error));
 
-  const syncMessage = await syncNow(interaction, String(databaseId), sourceUrl, provider);
+  const syncMessage = await syncNow(
+    interaction,
+    String(databaseId),
+    sourceUrl,
+    provider,
+    authUsername,
+    authPassword
+  );
   const archiveSummary = await archiveExpiredCTFs(interaction);
   await interaction.editReply({
     embeds: [
@@ -208,7 +221,9 @@ async function createFromCTFtime(
 async function createManual(
   interaction: ChatInputCommandInteraction,
   sourceUrl: string | null,
-  provider: ChallengeSyncProvider
+  provider: ChallengeSyncProvider,
+  authUsername?: string,
+  authPassword?: string
 ): Promise<void> {
   if (!interaction.guild) return;
 
@@ -334,7 +349,14 @@ async function createManual(
       .catch((error) => logger.warn(`Could not create scheduled event for ${name}:`, error));
   }
 
-  const syncMessage = await syncNow(interaction, String(databaseId), sourceUrl, provider);
+  const syncMessage = await syncNow(
+    interaction,
+    String(databaseId),
+    sourceUrl,
+    provider,
+    authUsername,
+    authPassword
+  );
   const archiveSummary = await archiveExpiredCTFs(interaction);
   await interaction.editReply({
     embeds: [
@@ -444,6 +466,18 @@ const command: Command = {
             .setMinValue(0)
             .setMaxValue(365)
         )
+        .addStringOption((option) =>
+          option
+            .setName('username')
+            .setDescription('Tài khoản CTF nếu trang challenge cần đăng nhập')
+            .setMaxLength(200)
+        )
+        .addStringOption((option) =>
+          option
+            .setName('password')
+            .setDescription('Mật khẩu/token CTF nếu trang challenge cần đăng nhập')
+            .setMaxLength(500)
+        )
     )
     .addSubcommand((subcommand) =>
       subcommand
@@ -495,13 +529,28 @@ const command: Command = {
       }
 
       const provider: ChallengeSyncProvider = 'auto';
+      const authUsername = interaction.options.getString('username')?.trim();
+      const authPassword = interaction.options.getString('password') ?? undefined;
+      if ((authUsername && !authPassword) || (!authUsername && authPassword)) {
+        await interaction.editReply({
+          embeds: [errorEmbed('Nếu trang cần đăng nhập, hãy nhập đủ cả `username` và `password`.')],
+        });
+        return;
+      }
       const ctftimeId = interaction.options.getInteger('ctftime_id');
       if (ctftimeId) {
-        await createFromCTFtime(interaction, ctftimeId, sourceUrl, provider);
+        await createFromCTFtime(
+          interaction,
+          ctftimeId,
+          sourceUrl,
+          provider,
+          authUsername,
+          authPassword
+        );
         return;
       }
 
-      await createManual(interaction, sourceUrl, provider);
+      await createManual(interaction, sourceUrl, provider, authUsername, authPassword);
     } catch (error) {
       logger.error('CTF command failed:', error);
       const payload = { embeds: [errorEmbed('Không hoàn tất được thao tác CTF.')] };

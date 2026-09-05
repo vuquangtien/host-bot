@@ -21,7 +21,7 @@ import { config } from '../config/env';
 
 const USER_AGENT =
   'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
-const FETCH_HEADERS = {
+const FETCH_HEADERS: Record<string, string> = {
   'User-Agent': USER_AGENT,
   Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7',
   'Accept-Language': 'en-US,en;q=0.9,vi;q=0.8',
@@ -85,6 +85,20 @@ interface DiscoverySample {
 interface DiscoveryFetchResult {
   sample: DiscoverySample;
   fullBody: string;
+}
+
+interface FetchSession {
+  cookies: Map<string, string>;
+  authorization?: string;
+  authenticated: boolean;
+}
+
+interface LoginForm {
+  action: URL;
+  method: 'GET' | 'POST';
+  fields: URLSearchParams;
+  usernameField: string;
+  passwordField: string;
 }
 
 type DiscoveredParserRuleKind = 'data' | 'html';
@@ -414,13 +428,234 @@ class ChallengeSyncService {
   private readonly parserRuleCache = new Map<string, DiscoveredParserRule>();
   private readonly llmExtractionCache = new Map<string, LLMExtractionCacheEntry>();
 
-  private async fetchText(url: URL): Promise<string> {
+  private sessionHeaders(session?: FetchSession): Record<string, string> {
+    const headers = { ...FETCH_HEADERS };
+    if (session?.authorization) {
+      headers.Authorization = session.authorization;
+    }
+    if (session?.cookies.size) {
+      headers.Cookie = Array.from(session.cookies.entries())
+        .map(([name, value]) => `${name}=${value}`)
+        .join('; ');
+    }
+    return headers;
+  }
+
+  private rememberCookies(session: FetchSession | undefined, setCookie: unknown): void {
+    if (!session) return;
+    const values = Array.isArray(setCookie)
+      ? setCookie
+      : typeof setCookie === 'string'
+        ? [setCookie]
+        : [];
+    for (const cookie of values) {
+      const pair = cookie.split(';', 1)[0]?.trim();
+      if (!pair) continue;
+      const separator = pair.indexOf('=');
+      if (separator <= 0) continue;
+      session.cookies.set(pair.slice(0, separator), pair.slice(separator + 1));
+    }
+  }
+
+  private attrValue(attrs: string, name: string): string | undefined {
+    const pattern = new RegExp(`\\b${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s"'<>]+))`, 'i');
+    const match = pattern.exec(attrs);
+    return decodeHTML(match?.[1] ?? match?.[2] ?? match?.[3] ?? '').trim() || undefined;
+  }
+
+  private parseLoginForm(html: string, pageURL: URL): LoginForm | null {
+    const forms: Array<{ attrs: string; body: string }> = [];
+    const formRegex = /<form\b([^>]*)>([\s\S]*?)<\/form>/gi;
+    let formMatch: RegExpExecArray | null;
+    while ((formMatch = formRegex.exec(html))) {
+      forms.push({ attrs: formMatch[1], body: formMatch[2] });
+    }
+    if (forms.length === 0) {
+      forms.push({ attrs: '', body: html });
+    }
+
+    for (const form of forms) {
+      const inputs: Array<{ name: string; type: string; value: string }> = [];
+      const inputRegex = /<input\b([^>]*)>/gi;
+      let inputMatch: RegExpExecArray | null;
+      while ((inputMatch = inputRegex.exec(form.body))) {
+        const attrs = inputMatch[1];
+        const name = this.attrValue(attrs, 'name');
+        if (!name) continue;
+        inputs.push({
+          name,
+          type: (this.attrValue(attrs, 'type') ?? 'text').toLocaleLowerCase(),
+          value: this.attrValue(attrs, 'value') ?? '',
+        });
+      }
+
+      const passwordInput = inputs.find((input) => input.type === 'password');
+      if (!passwordInput) continue;
+
+      const usernameInput =
+        inputs.find(
+          (input) =>
+            input.name !== passwordInput.name &&
+            /(?:user|name|login|email|account|team)/i.test(input.name) &&
+            ['', 'text', 'email'].includes(input.type)
+        ) ??
+        inputs.find(
+          (input) =>
+            input.name !== passwordInput.name &&
+            ['', 'text', 'email'].includes(input.type) &&
+            !/csrf|nonce|token/i.test(input.name)
+        );
+      if (!usernameInput) continue;
+
+      const fields = new URLSearchParams();
+      for (const input of inputs) {
+        if (input.name === usernameInput.name || input.name === passwordInput.name) continue;
+        if (['button', 'submit', 'image', 'file'].includes(input.type)) continue;
+        fields.append(input.name, input.value);
+      }
+
+      const method = (this.attrValue(form.attrs, 'method') ?? 'GET').toLocaleUpperCase();
+      const action = this.attrValue(form.attrs, 'action') ?? pageURL.toString();
+      const actionURL = new URL(action, pageURL);
+      if (actionURL.origin !== pageURL.origin) continue;
+
+      return {
+        action: actionURL,
+        method: method === 'POST' ? 'POST' : 'GET',
+        fields,
+        usernameField: usernameInput.name,
+        passwordField: passwordInput.name,
+      };
+    }
+
+    return null;
+  }
+
+  private loginCandidateURLs(baseURL: URL): URL[] {
+    const urls = new Map<string, URL>();
+    const add = (raw: string | URL): void => {
+      const url = raw instanceof URL ? new URL(raw.toString()) : new URL(raw, baseURL.origin);
+      if (url.origin === baseURL.origin) urls.set(url.toString(), url);
+    };
+    add(baseURL);
+    for (const path of ['/login', '/signin', '/user/login', '/users/login', '/auth/login']) {
+      add(path);
+    }
+    return Array.from(urls.values());
+  }
+
+  private async submitLoginForm(
+    session: FetchSession,
+    form: LoginForm,
+    username: string,
+    password: string,
+    referer: URL
+  ): Promise<boolean> {
+    const fields = new URLSearchParams(form.fields);
+    fields.set(form.usernameField, username);
+    fields.set(form.passwordField, password);
+    const headers = {
+      ...this.sessionHeaders(session),
+      Origin: form.action.origin,
+      Referer: referer.toString(),
+      'Content-Type': 'application/x-www-form-urlencoded',
+    };
+
+    const response =
+      form.method === 'POST'
+        ? await axios.post<string>(form.action.toString(), fields.toString(), {
+            headers,
+            timeout: 15_000,
+            maxRedirects: 0,
+            validateStatus: () => true,
+            transformResponse: [(data) => data],
+          })
+        : await axios.get<string>(
+            (() => {
+              const url = new URL(form.action.toString());
+              for (const [key, value] of fields) url.searchParams.set(key, value);
+              return url.toString();
+            })(),
+            {
+              headers,
+              timeout: 15_000,
+              maxRedirects: 0,
+              validateStatus: () => true,
+              transformResponse: [(data) => data],
+            }
+          );
+
+    this.rememberCookies(session, response.headers['set-cookie']);
+    return response.status >= 200 && response.status < 400;
+  }
+
+  private async createFetchSession(
+    source: ChallengeSyncSource,
+    baseURL: URL
+  ): Promise<FetchSession | undefined> {
+    const username = source.authUsername?.trim();
+    const password = source.authPassword;
+    if (!username || !password) return undefined;
+
+    const session: FetchSession = {
+      cookies: new Map<string, string>(),
+      authenticated: false,
+    };
+    const queue = this.loginCandidateURLs(baseURL);
+    const attempted = new Set<string>();
+
+    while (queue.length > 0 && attempted.size < 12) {
+      const loginURL = queue.shift();
+      if (!loginURL) break;
+      if (attempted.has(loginURL.toString())) continue;
+      attempted.add(loginURL.toString());
+
+      const response = await axios.get<string>(loginURL.toString(), {
+        headers: this.sessionHeaders(session),
+        responseType: 'text',
+        timeout: 15_000,
+        maxRedirects: 0,
+        validateStatus: () => true,
+        transformResponse: [(data) => data],
+      });
+      this.rememberCookies(session, response.headers['set-cookie']);
+
+      const location = response.headers.location;
+      if (
+        response.status >= 300 &&
+        response.status < 400 &&
+        typeof location === 'string' &&
+        location
+      ) {
+        const redirectURL = new URL(location, loginURL);
+        if (redirectURL.origin === baseURL.origin && !attempted.has(redirectURL.toString())) {
+          queue.unshift(redirectURL);
+        }
+      }
+
+      const form = this.parseLoginForm(String(response.data ?? ''), loginURL);
+      if (!form) continue;
+
+      if (await this.submitLoginForm(session, form, username, password, loginURL)) {
+        session.authenticated = true;
+        logger.info(`Authenticated challenge sync session for ${baseURL.hostname}`);
+        return session;
+      }
+    }
+
+    session.authorization = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+    logger.warn(`No login form found for ${baseURL.hostname}; trying HTTP Basic auth`);
+    return session;
+  }
+
+  private async fetchText(url: URL, session?: FetchSession): Promise<string> {
     const response = await axios.get<string>(url.toString(), {
-      headers: FETCH_HEADERS,
+      headers: this.sessionHeaders(session),
       responseType: 'text',
       timeout: 15_000,
       transformResponse: [(data) => data],
     });
+    this.rememberCookies(session, response.headers['set-cookie']);
     return response.data;
   }
 
@@ -1003,17 +1238,19 @@ class ChallengeSyncService {
     rule: DiscoveredParserRule
   ): Promise<ProviderResult> {
     const baseURL = normalizeURL(source.url);
+    const session = await this.createFetchSession(source, baseURL);
     const endpoint = new URL(rule.endpoint, baseURL);
     if (endpoint.origin !== baseURL.origin) {
       throw new Error(`Parser rule endpoint must stay on ${baseURL.origin}`);
     }
 
     const response = await axios.get<string>(endpoint.toString(), {
-      headers: FETCH_HEADERS,
+      headers: this.sessionHeaders(session),
       responseType: 'text',
       timeout: 15_000,
       transformResponse: [(data) => data],
     });
+    this.rememberCookies(session, response.headers['set-cookie']);
     const body = String(response.data ?? '').trim();
     const contentType = String(response.headers['content-type'] ?? '');
     if (rule.kind === 'html') {
@@ -1064,15 +1301,19 @@ class ChallengeSyncService {
     };
   }
 
-  private async fetchDiscoveryURL(url: URL): Promise<DiscoveryFetchResult | null> {
+  private async fetchDiscoveryURL(
+    url: URL,
+    session?: FetchSession
+  ): Promise<DiscoveryFetchResult | null> {
     try {
       const response = await axios.get<string>(url.toString(), {
-        headers: FETCH_HEADERS,
+        headers: this.sessionHeaders(session),
         responseType: 'text',
         timeout: 10_000,
         transformResponse: [(data) => data],
         validateStatus: () => true,
       });
+      this.rememberCookies(session, response.headers['set-cookie']);
       const body = String(response.data ?? '').trim();
       if (!body) return null;
       const sample = attachRawBody(
@@ -1259,7 +1500,11 @@ class ChallengeSyncService {
     }
   }
 
-  private async collectDiscoverySamples(baseURL: URL, html: string): Promise<DiscoverySample[]> {
+  private async collectDiscoverySamples(
+    baseURL: URL,
+    html: string,
+    session?: FetchSession
+  ): Promise<DiscoverySample[]> {
     const samples = new Map<string, DiscoverySample>();
     const candidates = new Map<string, URL>();
     const scriptQueue = new Map<string, URL>();
@@ -1290,7 +1535,7 @@ class ChallengeSyncService {
       const key = url.toString();
       if (attemptedURLs.has(key)) return;
       attemptedURLs.add(key);
-      const result = await this.fetchDiscoveryURL(url);
+      const result = await this.fetchDiscoveryURL(url, session);
       if (!result) return;
       addSample(result.sample);
       addCandidates(this.collectEndpointURLs(result.fullBody, url));
@@ -1666,8 +1911,9 @@ class ChallengeSyncService {
       throw new Error('Gemini parser discovery is enabled but GEMINI_API_KEY is not configured');
     }
 
-    const html = await this.fetchText(baseURL);
-    const samples = await this.collectDiscoverySamples(baseURL, html);
+    const session = await this.createFetchSession(source, baseURL);
+    const html = await this.fetchText(baseURL, session);
+    const samples = await this.collectDiscoverySamples(baseURL, html, session);
     const sampleResult = this.fetchFromDiscoveredSamples(baseURL, samples);
     if (sampleResult) return sampleResult;
 

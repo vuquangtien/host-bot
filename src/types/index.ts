@@ -54,6 +54,8 @@ export interface ChallengeSyncSource {
   url: string;
   provider: ChallengeSyncProvider;
   enabled: boolean;
+  authUsername?: string;
+  authPassword?: string;
   lastSyncAt?: number;
   lastError?: string;
   createdBy: string;
